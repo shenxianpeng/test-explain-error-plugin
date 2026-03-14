@@ -1,0 +1,193 @@
+jenkins:
+  systemMessage: |
+    Jenkins configured automatically via Configuration as Code (JCasC).
+    This instance is used to test the explain-error Jenkins plugin.
+  numExecutors: 4
+  scmCheckoutRetryCount: 0
+  mode: NORMAL
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          name: "Administrator"
+          password: "${JENKINS_ADMIN_PASSWORD:-admin}"
+
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"
+
+jobs:
+  # ── Folder: Team A ────────────────────────────────────────────────────────
+  - script: |
+      folder('Team A') {
+        displayName('Team A')
+        description('Team A pipelines for testing the explain-error plugin')
+      }
+
+  # Team A / Build Pipeline  (upstream – triggers Deploy Pipeline on success)
+  - script: |
+      pipelineJob('Team A/Build Pipeline') {
+        displayName('Build Pipeline')
+        description('Upstream build pipeline that triggers the Deploy Pipeline on success')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Checkout') {
+                    steps {
+                      echo 'Checking out source code...'
+                    }
+                  }
+                  stage('Build') {
+                    steps {
+                      echo 'Compiling application...'
+                      sh 'echo "BUILD SUCCESS"'
+                    }
+                  }
+                  stage('Unit Test') {
+                    steps {
+                      echo 'Running unit tests...'
+                      sh 'echo "Tests passed: 42/42"'
+                    }
+                  }
+                }
+                post {
+                  success {
+                    build job: 'Team A/Deploy Pipeline', wait: false, propagate: false
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # Team A / Deploy Pipeline  (downstream – triggered by Build Pipeline)
+  - script: |
+      pipelineJob('Team A/Deploy Pipeline') {
+        displayName('Deploy Pipeline')
+        description('Downstream deployment pipeline triggered by the Build Pipeline')
+        triggers {
+          upstream('Team A/Build Pipeline', hudson.model.Result.SUCCESS)
+        }
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Deploy to Staging') {
+                    steps {
+                      echo 'Deploying application to the staging environment...'
+                      sh 'echo "Staged successfully"'
+                    }
+                  }
+                  stage('Smoke Test') {
+                    steps {
+                      echo 'Running smoke tests against staging...'
+                      sh 'echo "Smoke tests passed"'
+                    }
+                  }
+                  stage('Deploy to Production') {
+                    steps {
+                      echo 'Deploying application to production...'
+                      sh 'echo "Deployed to production"'
+                    }
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Folder: Team B ────────────────────────────────────────────────────────
+  - script: |
+      folder('Team B') {
+        displayName('Team B')
+        description('Team B pipelines for testing the explain-error plugin')
+      }
+
+  # Team B / Build Pipeline  (intentionally failing to exercise explain-error)
+  - script: |
+      pipelineJob('Team B/Build Pipeline') {
+        displayName('Build Pipeline')
+        description('Build pipeline that fails during compilation – used to test error explanation')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Checkout') {
+                    steps {
+                      echo 'Checking out source code...'
+                    }
+                  }
+                  stage('Build') {
+                    steps {
+                      echo 'Attempting to compile...'
+                      sh """
+                        echo 'Compiling...'
+                        echo 'ERROR: cannot find symbol'
+                        echo '  symbol:   method nonExistentMethod()'
+                        echo '  location: class com.example.App'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # Team B / Integration Test Pipeline  (downstream – triggered by Build Pipeline)
+  - script: |
+      pipelineJob('Team B/Integration Test Pipeline') {
+        displayName('Integration Test Pipeline')
+        description('Integration tests for Team B, triggered by the Build Pipeline')
+        triggers {
+          upstream('Team B/Build Pipeline', hudson.model.Result.SUCCESS)
+        }
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Setup') {
+                    steps {
+                      echo 'Setting up integration test environment...'
+                    }
+                  }
+                  stage('Integration Tests') {
+                    steps {
+                      echo 'Running integration tests...'
+                      sh """
+                        echo 'Test 1: PASSED'
+                        echo 'Test 2: PASSED'
+                        echo 'Test 3: FAILED - Connection refused to database at localhost:5432'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
