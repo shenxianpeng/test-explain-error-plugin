@@ -1,0 +1,16 @@
+services:
+  jenkins:
+    build:
+      context: ./jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+    environment:
+      # Override the default admin password (default: admin)
+      - JENKINS_ADMIN_PASSWORD=${JENKINS_ADMIN_PASSWORD:-admin}
+    restart: unless-stopped
+
+volumes:
+  jenkins_home:
