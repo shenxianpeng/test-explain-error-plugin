@@ -10,6 +10,8 @@ services:
     environment:
       # Override the default admin password (default: admin)
       - JENKINS_ADMIN_PASSWORD=${JENKINS_ADMIN_PASSWORD:-admin}
+      # OpenAI API key — required for explainError() calls in pipelines
+      - AI_API_KEY=${AI_API_KEY:-}
     restart: unless-stopped
 
 volumes:

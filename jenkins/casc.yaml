@@ -22,46 +22,61 @@ unclassified:
   location:
     url: "http://localhost:8080/"
 
+  # ── Global-level AI provider (used by Team B jobs) ─────────────────────────
+  explainError:
+    aiProvider:
+      openai:
+        apiKey: "${OPENAI_API_KEY}"
+        model: "gpt-4.1"
+    enableExplanation: true
+    customContext: |
+      Global context: This Jenkins instance is used to test the explain-error plugin.
+      If the error is a simulated one, explain what the underlying real-world cause would be.
+
 jobs:
-  # ── Folder: Team A ────────────────────────────────────────────────────────
+  # ── Folder: Team A (folder-level AI provider) ──────────────────────────────
+  # Uses a folder-level OpenAI provider configured via the Job DSL configure{}
+  # block, which overrides the global config for all jobs inside this folder.
   - script: |
       folder('Team A') {
-        displayName('Team A')
-        description('Team A pipelines for testing the explain-error plugin')
+        displayName('Team A – Folder-level AI Provider')
+        description('Tests all explainError() parameter combinations. Uses a folder-level OpenAI provider that overrides the global config.')
+        configure { node ->
+          def props = node / 'properties'
+          def folderProp = props / 'io.jenkins.plugins.explain_error.ExplainErrorFolderProperty'
+          folderProp / 'enableExplanation'('true')
+          def aiProvider = folderProp / 'aiProvider'
+          aiProvider.attributes()['class'] = 'io.jenkins.plugins.explain_error.provider.OpenAIProvider'
+          aiProvider / 'apiKey'(System.getenv('OPENAI_API_KEY') ?: '')
+          aiProvider / 'model'('gpt-4.1')
+        }
       }
 
-  # Team A / Build Pipeline  (upstream – triggers Deploy Pipeline on success)
+  # ── Team A / Case 01 - Default ─────────────────────────────────────────────
+  # explainError() — no parameters, all defaults (maxLines=100, language=English,
+  # no logPattern, uses folder-level customContext).
   - script: |
-      pipelineJob('Team A/Build Pipeline') {
-        displayName('Build Pipeline')
-        description('Upstream build pipeline that triggers the Deploy Pipeline on success')
+      pipelineJob('Team A/Case 01 - Default') {
+        displayName('Case 01 - Default')
+        description('Tests explainError() with no parameters. Verifies the plugin works with all defaults.')
         definition {
           cps {
             script('''
               pipeline {
                 agent any
                 stages {
-                  stage('Checkout') {
+                  stage('Run') {
                     steps {
-                      echo 'Checking out source code...'
-                    }
-                  }
-                  stage('Build') {
-                    steps {
-                      echo 'Compiling application...'
-                      sh 'echo "BUILD SUCCESS"'
-                    }
-                  }
-                  stage('Unit Test') {
-                    steps {
-                      echo 'Running unit tests...'
-                      sh 'echo "Tests passed: 42/42"'
+                      sh """
+                        echo 'Starting task...'
+                        nonexistent-command --flag value
+                      """
                     }
                   }
                 }
                 post {
-                  success {
-                    build job: 'Team A/Deploy Pipeline', wait: false, propagate: false
+                  failure {
+                    explainError()
                   }
                 }
               }
@@ -71,36 +86,264 @@ jobs:
         }
       }
 
-  # Team A / Deploy Pipeline  (downstream – triggered by Build Pipeline)
+  # ── Team A / Case 02 - maxLines ────────────────────────────────────────────
+  # explainError(maxLines: 30) — generates a 50-line verbose log; only the last
+  # 30 lines are sent to the AI, trimming the noisy preamble.
   - script: |
-      pipelineJob('Team A/Deploy Pipeline') {
-        displayName('Deploy Pipeline')
-        description('Downstream deployment pipeline triggered by the Build Pipeline')
-        triggers {
-          upstream('Team A/Build Pipeline', hudson.model.Result.SUCCESS)
-        }
+      pipelineJob('Team A/Case 02 - maxLines') {
+        displayName('Case 02 - maxLines')
+        description('Tests explainError(maxLines: 30). Generates a 50-line log; only the last 30 lines are analyzed by the AI.')
         definition {
           cps {
             script('''
               pipeline {
                 agent any
                 stages {
-                  stage('Deploy to Staging') {
+                  stage('Run') {
                     steps {
-                      echo 'Deploying application to the staging environment...'
-                      sh 'echo "Staged successfully"'
+                      sh """
+                        for i in $(seq 1 40); do
+                          echo "INFO [$i/40]: processing batch item $i of 40..."
+                        done
+                        echo 'ERROR: java.lang.OutOfMemoryError: Java heap space'
+                        echo '\\tat com.example.BatchProcessor.process(BatchProcessor.java:142)'
+                        echo '\\tat com.example.BatchProcessor.run(BatchProcessor.java:87)'
+                        echo 'FATAL: JVM terminated due to out-of-memory condition'
+                        echo 'Heap dump written to /tmp/heapdump.hprof'
+                        echo 'Container will restart in 30 seconds...'
+                        exit 1
+                      """
                     }
                   }
-                  stage('Smoke Test') {
+                }
+                post {
+                  failure {
+                    explainError(maxLines: 30)
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team A / Case 03 - logPattern ──────────────────────────────────────────
+  # explainError(logPattern: '(?i)(error|exception|failed)') — filters lines
+  # matching the regex, discarding INFO/DEBUG noise before sending to the AI.
+  - script: |
+      pipelineJob('Team A/Case 03 - logPattern') {
+        displayName('Case 03 - logPattern')
+        description('Tests explainError(logPattern: ...). Only lines matching ERROR/EXCEPTION/FAILED are sent to the AI.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run') {
                     steps {
-                      echo 'Running smoke tests against staging...'
-                      sh 'echo "Smoke tests passed"'
+                      sh """
+                        echo 'INFO:  Connecting to test database...'
+                        echo 'INFO:  Loading test fixtures...'
+                        echo 'INFO:  Running test suite (47 tests)...'
+                        echo 'INFO:  Test 1  PASSED'
+                        echo 'INFO:  Test 2  PASSED'
+                        echo 'INFO:  Test 3  PASSED'
+                        echo 'ERROR: Test 4  FAILED - AssertionError: expected 200 but got 404'
+                        echo 'INFO:  Test 5  PASSED'
+                        echo 'INFO:  Test 6  PASSED'
+                        echo 'ERROR: Test 7  FAILED - Connection reset by peer (socket timeout after 5000 ms)'
+                        echo 'INFO:  Test 8  PASSED'
+                        echo 'EXCEPTION: java.net.SocketTimeoutException: Read timed out'
+                        echo 'Results: 45 passed, 2 FAILED'
+                        exit 1
+                      """
                     }
                   }
-                  stage('Deploy to Production') {
+                }
+                post {
+                  failure {
+                    explainError(logPattern: '(?i)(error|exception|failed)')
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team A / Case 04 - language ────────────────────────────────────────────
+  # explainError(language: '中文') — AI explanation is returned in Chinese.
+  - script: |
+      pipelineJob('Team A/Case 04 - language') {
+        displayName('Case 04 - language')
+        description('Tests explainError(language: "中文"). The AI explanation should be returned in Chinese.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run') {
                     steps {
-                      echo 'Deploying application to production...'
-                      sh 'echo "Deployed to production"'
+                      sh """
+                        echo 'Attempting database connection...'
+                        echo 'FATAL: Unable to connect to database server'
+                        echo 'Host: db.internal.example.com  Port: 5432'
+                        echo 'Error: Connection refused (ECONNREFUSED)'
+                        echo 'Check that the database service is running and accessible from this host.'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+                post {
+                  failure {
+                    explainError(language: '中文')
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team A / Case 05 - customContext ───────────────────────────────────────
+  # explainError(customContext: '...') — job-level custom context overrides the
+  # folder/global context with domain-specific troubleshooting instructions.
+  - script: |
+      pipelineJob('Team A/Case 05 - customContext') {
+        displayName('Case 05 - customContext')
+        description('Tests explainError(customContext: ...). Job-level customContext overrides the folder/global context.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run') {
+                    steps {
+                      sh """
+                        echo 'Deploying payment-service v2.4.1 to production cluster...'
+                        echo 'Applying Kubernetes manifests...'
+                        echo 'Waiting for rollout...'
+                        echo 'ERROR: Deployment timed out after 600s'
+                        echo 'Pod payment-service-78d9f-xk2p9: CrashLoopBackOff'
+                        echo 'Last exit code: 137 (OOMKilled)'
+                        echo 'Requested memory: 256Mi  Limit: 512Mi  Node available: 480Mi'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+                post {
+                  failure {
+                    explainError(customContext: """
+                      This is the payment-service Kubernetes deployment pipeline.
+                      - If OOMKilled: recommend increasing memory limit in the Helm values file
+                      - If CrashLoopBackOff: check application startup logs and liveness probe config
+                      - PCI DSS compliance: never suggest logging sensitive card data to fix issues
+                      - Escalation path: contact #platform-team on Slack for cluster-level issues
+                    """)
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team A / Case 06 - All Parameters ─────────────────────────────────────
+  # explainError() with all four optional parameters specified simultaneously.
+  - script: |
+      pipelineJob('Team A/Case 06 - All Parameters') {
+        displayName('Case 06 - All Parameters')
+        description('Tests explainError() with maxLines, logPattern, language, and customContext all specified together.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run') {
+                    steps {
+                      sh """
+                        echo 'INFO: Starting Maven build...'
+                        echo 'INFO: Resolving dependencies...'
+                        echo 'INFO: Compiling main sources...'
+                        echo 'ERROR: /src/main/java/com/example/OrderService.java:52: error: cannot find symbol'
+                        echo 'ERROR:         PaymentGateway gateway = new PaymentGateway(config);'
+                        echo 'ERROR:                                      ^'
+                        echo 'ERROR:   symbol:   class PaymentGateway'
+                        echo 'ERROR:   location: class com.example.OrderService'
+                        echo 'ERROR: /src/main/java/com/example/OrderService.java:78: error: method discountPrice() not found'
+                        echo 'ERROR: 2 errors'
+                        echo 'INFO: BUILD FAILURE'
+                        echo 'INFO: Total time: 12.4s'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+                post {
+                  failure {
+                    explainError(
+                      maxLines: 50,
+                      logPattern: '(?i)(error|failed|exception|symbol)',
+                      language: 'Español',
+                      customContext: "This is the order-service Java build.\n" +
+                        "- PaymentGateway is in module :payment-core — check dependency in pom.xml\n" +
+                        "- discountPrice() was renamed to applyDiscount() in the last refactor (PR #312)\n" +
+                        "- Build owner: order-team@example.com"
+                    )
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team A / Case 07 - Return Value ───────────────────────────────────────
+  # explainError() returns the AI explanation as a String, enabling downstream
+  # use in notifications (Slack, email, etc.).
+  - script: |
+      pipelineJob('Team A/Case 07 - Return Value') {
+        displayName('Case 07 - Return Value')
+        description('Tests that explainError() returns the AI explanation as a String. Captures and echoes it for verification.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run') {
+                    steps {
+                      sh """
+                        echo 'Running application...'
+                        echo 'Exception in thread "main" java.lang.NullPointerException'
+                        echo '\\tat com.example.UserService.getProfile(UserService.java:34)'
+                        echo '\\tat com.example.UserController.handleRequest(UserController.java:19)'
+                        echo '\\tat com.example.Application.main(Application.java:12)'
+                        echo 'Process finished with exit code 1'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+                post {
+                  failure {
+                    script {
+                      def explanation = explainError()
+                      // Simulate forwarding the explanation to a notification system
+                      echo "=== AI Explanation (captured as return value) ==="
+                      echo "${explanation}"
+                      echo "================================================="
                     }
                   }
                 }
@@ -111,39 +354,131 @@ jobs:
         }
       }
 
-  # ── Folder: Team B ────────────────────────────────────────────────────────
+  # ── Team A / Run All Cases ────────────────────────────────────────────────
+  # Master pipeline: triggers all 7 Team A cases in parallel.
+  # propagate: false ensures one failing case doesn't abort the others.
+  # Run this after every explain-error plugin upgrade to validate all cases.
+  - script: |
+      pipelineJob('Team A/Run All Cases') {
+        displayName('Run All Cases')
+        description('Triggers all 7 Team A test cases in parallel. Run this to validate the explain-error plugin after an upgrade.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run All Cases in Parallel') {
+                    steps {
+                      script {
+                        def cases = [
+                          'Case 01 - Default',
+                          'Case 02 - maxLines',
+                          'Case 03 - logPattern',
+                          'Case 04 - language',
+                          'Case 05 - customContext',
+                          'Case 06 - All Parameters',
+                          'Case 07 - Return Value',
+                        ]
+                        def parallelBranches = cases.collectEntries { caseName ->
+                          [caseName, {
+                            build job: "Team A/${caseName}", propagate: false, wait: true
+                          }]
+                        }
+                        parallel parallelBranches
+                      }
+                    }
+                  }
+                }
+                post {
+                  always {
+                    echo 'All Team A cases completed. Check each job sidebar for AI explanations.'
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Folder: Team B (global-level AI provider) ──────────────────────────────
+  # Team B has NO folder-level AI config — it falls back entirely to the global
+  # unclassified.explainError config. Purpose: verify global-level config works.
   - script: |
       folder('Team B') {
-        displayName('Team B')
-        description('Team B pipelines for testing the explain-error plugin')
+        displayName('Team B – Global-level AI Provider')
+        description('Verifies that the global-level AI provider config works. No folder-level overrides are set on this folder.')
       }
 
-  # Team B / Build Pipeline  (intentionally failing to exercise explain-error)
+  # ── Team B / Case 01 - Default ────────────────────────────────────────────
+  # Identical scenario to Team A / Case 01 — same error, same explainError() call.
+  # Difference: AI provider comes from global config instead of folder-level.
   - script: |
-      pipelineJob('Team B/Build Pipeline') {
-        displayName('Build Pipeline')
-        description('Build pipeline that fails during compilation – used to test error explanation')
+      pipelineJob('Team B/Case 01 - Default') {
+        displayName('Case 01 - Default')
+        description('Same scenario as Team A Case 01. Uses global-level AI provider to confirm global config is working.')
         definition {
           cps {
             script('''
               pipeline {
                 agent any
                 stages {
-                  stage('Checkout') {
+                  stage('Run') {
                     steps {
-                      echo 'Checking out source code...'
+                      sh """
+                        echo 'Starting task...'
+                        nonexistent-command --flag value
+                      """
                     }
                   }
-                  stage('Build') {
+                }
+                post {
+                  failure {
+                    explainError()
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team B / Case 07 - Return Value ──────────────────────────────────────
+  # Identical scenario to Team A / Case 07.
+  # Confirms the return value feature works with the global AI provider too.
+  - script: |
+      pipelineJob('Team B/Case 07 - Return Value') {
+        displayName('Case 07 - Return Value')
+        description('Same scenario as Team A Case 07. Uses global-level AI provider to confirm return value works with global config.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Run') {
                     steps {
-                      echo 'Attempting to compile...'
                       sh """
-                        echo 'Compiling...'
-                        echo 'ERROR: cannot find symbol'
-                        echo '  symbol:   method nonExistentMethod()'
-                        echo '  location: class com.example.App'
+                        echo 'Running application...'
+                        echo 'Exception in thread "main" java.lang.NullPointerException'
+                        echo '\\tat com.example.UserService.getProfile(UserService.java:34)'
+                        echo '\\tat com.example.UserController.handleRequest(UserController.java:19)'
+                        echo '\\tat com.example.Application.main(Application.java:12)'
+                        echo 'Process finished with exit code 1'
                         exit 1
                       """
+                    }
+                  }
+                }
+                post {
+                  failure {
+                    script {
+                      def explanation = explainError()
+                      echo "=== AI Explanation (captured as return value) ==="
+                      echo "${explanation}"
+                      echo "================================================="
                     }
                   }
                 }
@@ -154,35 +489,37 @@ jobs:
         }
       }
 
-  # Team B / Integration Test Pipeline  (downstream – triggered by Build Pipeline)
+  # ── Team B / Run All Cases ────────────────────────────────────────────────
   - script: |
-      pipelineJob('Team B/Integration Test Pipeline') {
-        displayName('Integration Test Pipeline')
-        description('Integration tests for Team B, triggered by the Build Pipeline')
-        triggers {
-          upstream('Team B/Build Pipeline', hudson.model.Result.SUCCESS)
-        }
+      pipelineJob('Team B/Run All Cases') {
+        displayName('Run All Cases')
+        description('Triggers both Team B test cases in parallel to verify the global-level AI provider config.')
         definition {
           cps {
             script('''
               pipeline {
                 agent any
                 stages {
-                  stage('Setup') {
+                  stage('Run All Cases in Parallel') {
                     steps {
-                      echo 'Setting up integration test environment...'
+                      script {
+                        def cases = [
+                          'Case 01 - Default',
+                          'Case 07 - Return Value',
+                        ]
+                        def parallelBranches = cases.collectEntries { caseName ->
+                          [caseName, {
+                            build job: "Team B/${caseName}", propagate: false, wait: true
+                          }]
+                        }
+                        parallel parallelBranches
+                      }
                     }
                   }
-                  stage('Integration Tests') {
-                    steps {
-                      echo 'Running integration tests...'
-                      sh """
-                        echo 'Test 1: PASSED'
-                        echo 'Test 2: PASSED'
-                        echo 'Test 3: FAILED - Connection refused to database at localhost:5432'
-                        exit 1
-                      """
-                    }
+                }
+                post {
+                  always {
+                    echo 'All Team B cases completed. Check each job sidebar for AI explanations.'
                   }
                 }
               }
