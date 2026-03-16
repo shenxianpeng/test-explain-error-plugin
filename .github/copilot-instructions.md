@@ -7,6 +7,9 @@ This is a Docker Compose–based Jenkins environment used to test the [explain-e
 ## Starting and Stopping
 
 ```bash
+# Set your AI API key (required — passed into Jenkins as AI_API_KEY)
+export AI_API_KEY=your-openai-api-key
+
 # Start Jenkins (builds image on first run or after changes)
 docker compose up --build
 
@@ -34,27 +37,62 @@ All configuration is **Infrastructure as Code** — no manual Jenkins setup requ
 
 ## Pre-Configured Jobs
 
-| Folder | Job | Behavior |
-|--------|-----|----------|
-| Team A | Build Pipeline | Succeeds; triggers Deploy Pipeline downstream |
-| Team A | Deploy Pipeline | Deploys to staging → runs smoke tests → deploys to prod |
-| Team B | Build Pipeline | **Intentionally fails** (simulates a Java compile error) to exercise the explain-error plugin |
-| Team B | Integration Test Pipeline | **Intentionally fails** (simulates a DB connection error) |
+There are two folders. Each folder has a **Run All Cases** master pipeline.
+
+### Team A – Folder-level AI Provider
+
+Tests every `explainError()` parameter combination. The folder carries its own AI provider
+configured at folder level via a Job DSL `configure {}` block (class:
+`io.jenkins.plugins.explain_error.ExplainErrorFolderProperty`, provider class:
+`io.jenkins.plugins.explain_error.provider.OpenAIProvider`).
+
+| Job | `explainError()` call |
+|-----|----------------------|
+| Case 01 - Default | `explainError()` — all defaults |
+| Case 02 - maxLines | `explainError(maxLines: 30)` |
+| Case 03 - logPattern | `explainError(logPattern: '(?i)(error\|exception\|failed)')` |
+| Case 04 - language | `explainError(language: '中文')` |
+| Case 05 - customContext | `explainError(customContext: '...')` — overrides folder/global context |
+| Case 06 - All Parameters | all four params: `maxLines`, `logPattern`, `language`, `customContext` |
+| Case 07 - Return Value | captures return string: `def e = explainError(); echo e` |
+| Run All Cases | triggers Case 01–07 in parallel with `propagate: false` |
+
+### Team B – Global-level AI Provider
+
+Verifies the global `unclassified.explainError` config works. No folder-level override.
+Intentionally minimal (2 cases) to reduce maintenance — Team A already covers all parameters.
+
+| Job | Purpose |
+|-----|---------|
+| Case 01 - Default | same scenario as Team A Case 01, uses global AI provider |
+| Case 07 - Return Value | same scenario as Team A Case 07, uses global AI provider |
+| Run All Cases | triggers both cases in parallel |
 
 ## Key Conventions
 
 - **All jobs are defined in `casc.yaml`** using inline Job DSL `script` blocks — there are no `Jenkinsfile`s in external SCM repos.
 - **Pipeline scripts use `sandbox(true)`** — scripts run in the Groovy sandbox; no script approval needed.
-- **Failing jobs use `exit 1`** after printing realistic error messages to stdout — the explain-error plugin reads this output to generate explanations.
+- **All case jobs intentionally fail** (`exit 1` after printing a realistic error) — the explain-error plugin reads the console output to generate its AI explanation.
+- **`AI_API_KEY` env var** is passed from the host into the container via `docker-compose.yml` and consumed by `casc.yaml` for both the global provider (`${AI_API_KEY}`) and the Team A folder-level provider (`System.getenv('AI_API_KEY')`).
 - **The `jenkins_home` named volume** persists job history across `docker compose down`. Always use `docker compose down -v` to reset state entirely.
 - **`CASC_JENKINS_CONFIG` env var** points to `/casc/casc.yaml` inside the container — changing `casc.yaml` requires a rebuild and restart.
+- **Groovy string quoting in casc.yaml**: pipeline scripts are wrapped in `'''...'''` (single triple-quotes). Use `"""..."""` for nested multi-line strings inside a pipeline script. Never nest `'''...'''` inside another `'''...'''` — it terminates the outer string and causes a `MultipleCompilationErrorsException` at boot.
 
-## Adding or Modifying Jobs
+## Adding a New Test Case
 
-Edit `jenkins/casc.yaml`, then rebuild:
+1. Add a `- script: |` block to `jenkins/casc.yaml` under the appropriate folder.
+2. Add the job name to the `cases` list in that folder's `Run All Cases` pipeline script.
+3. Rebuild:
+   ```bash
+   docker compose up --build
+   ```
+
+## Validating a Plugin Release
 
 ```bash
-docker compose up --build
+export AI_API_KEY=your-openai-api-key
+docker compose down -v && docker compose up --build
 ```
 
-Each job is a `- script: |` block under the `jobs:` key, written in Job DSL Groovy syntax.
+Then run **Team A / Run All Cases** and **Team B / Run All Cases**.
+If all job sidebars show AI explanations, the plugin is safe to release.

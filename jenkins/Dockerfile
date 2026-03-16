@@ -1,4 +1,5 @@
-FROM jenkins/jenkins:lts-jdk17
+# https://github.com/jenkinsci/explain-error-plugin/blob/697da60c2be9bc7a298bc378270b0f88cc34e424/pom.xml#L23
+FROM jenkins/jenkins:2.528.3-lts-jdk17
 
 ENV JAVA_OPTS="-Djenkins.install.runSetupWizard=false"
 ENV CASC_JENKINS_CONFIG=/casc/casc.yaml
