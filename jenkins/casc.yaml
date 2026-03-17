@@ -354,14 +354,90 @@ jobs:
         }
       }
 
+  # ── Team A / Case 08 - Downstream Child ────────────────────────────────────
+  # A standalone sub-job that simulates a downstream build failure.
+  # It is triggered by Case 08 - Downstream Jobs (the parent).
+  - script: |
+      pipelineJob('Team A/Case 08 - Downstream Child') {
+        displayName('Case 08 - Downstream Child')
+        description('Sub-job triggered by Case 08 - Downstream Jobs. Simulates a downstream build failure so the parent can test downstream log collection.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Build') {
+                    steps {
+                      sh """
+                        echo 'INFO: Fetching artifacts from upstream...'
+                        echo 'INFO: Unpacking archive...'
+                        echo 'ERROR: checksum mismatch for artifact payment-service-2.4.1.jar'
+                        echo 'Expected: a3f8c2d1  Got: 00000000'
+                        echo 'FATAL: Artifact integrity check failed — aborting deployment'
+                        exit 1
+                      """
+                    }
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
+  # ── Team A / Case 08 - Downstream Jobs ─────────────────────────────────────
+  # explainError(collectDownstreamLogs: true, downstreamJobPattern: 'Case 08.*Child')
+  # The parent job triggers a downstream sub-job that fails, then calls explainError
+  # with downstream log collection enabled. Verifies that:
+  #   1. The plugin recursively collects logs from the failed sub-job.
+  #   2. "View failure output" in the sidebar links directly to the downstream error.
+  #   3. The regex filter limits collection to matched sub-jobs only.
+  - script: |
+      pipelineJob('Team A/Case 08 - Downstream Jobs') {
+        displayName('Case 08 - Downstream Jobs')
+        description('Tests explainError(collectDownstreamLogs: true, downstreamJobPattern: ...). Triggers a failing sub-job and verifies downstream log collection and smart redirection.')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Trigger Sub-Job') {
+                    steps {
+                      script {
+                        // propagate:false so the parent can reach the post block
+                        build job: 'Team A/Case 08 - Downstream Child',
+                              propagate: false,
+                              wait: true
+                      }
+                    }
+                  }
+                }
+                post {
+                  always {
+                    explainError(
+                      collectDownstreamLogs: true,
+                      downstreamJobPattern: 'Case 08.*Child'
+                    )
+                  }
+                }
+              }
+            '''.stripIndent())
+            sandbox(true)
+          }
+        }
+      }
+
   # ── Team A / Run All Cases ────────────────────────────────────────────────
-  # Master pipeline: triggers all 7 Team A cases in parallel.
+  # Master pipeline: triggers all 8 Team A cases in parallel.
   # propagate: false ensures one failing case doesn't abort the others.
   # Run this after every explain-error plugin upgrade to validate all cases.
   - script: |
       pipelineJob('Team A/Run All Cases') {
         displayName('Run All Cases')
-        description('Triggers all 7 Team A test cases in parallel. Run this to validate the explain-error plugin after an upgrade.')
+        description('Triggers all 8 Team A test cases in parallel. Run this to validate the explain-error plugin after an upgrade.')
         definition {
           cps {
             script('''
@@ -379,6 +455,7 @@ jobs:
                           'Case 05 - customContext',
                           'Case 06 - All Parameters',
                           'Case 07 - Return Value',
+                          'Case 08 - Downstream Jobs',
                         ]
                         def parallelBranches = cases.collectEntries { caseName ->
                           [caseName, {
