@@ -102,8 +102,8 @@ jobs:
                   stage('Run') {
                     steps {
                       sh """
-                        for i in $(seq 1 40); do
-                          echo "INFO [$i/40]: processing batch item $i of 40..."
+                        for i in \\$(seq 1 40); do
+                          echo "INFO [\\$i/40]: processing batch item \\$i of 40..."
                         done
                         echo 'ERROR: java.lang.OutOfMemoryError: Java heap space'
                         echo '\\tat com.example.BatchProcessor.process(BatchProcessor.java:142)'
@@ -459,7 +459,7 @@ jobs:
                         ]
                         def parallelBranches = cases.collectEntries { caseName ->
                           [caseName, {
-                            build job: "Team A/${caseName}", propagate: false, wait: true
+                            build job: caseName, propagate: false, wait: true
                           }]
                         }
                         parallel parallelBranches
@@ -586,7 +586,7 @@ jobs:
                         ]
                         def parallelBranches = cases.collectEntries { caseName ->
                           [caseName, {
-                            build job: "Team B/${caseName}", propagate: false, wait: true
+                            build job: caseName, propagate: false, wait: true
                           }]
                         }
                         parallel parallelBranches
